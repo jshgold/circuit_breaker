@@ -25,6 +25,24 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-tasks.withType<Test> {
-    useJUnitPlatform()
+// 일반 테스트: 시간이 오래 걸리고 타이밍에 의존하는 시뮬레이션은 제외한다.
+tasks.test {
+    useJUnitPlatform {
+        excludeTags("simulation")
+    }
+}
+
+// Phase 2 연쇄 장애 시뮬레이션 전용 태스크: ./gradlew simulationTest
+tasks.register<Test>("simulationTest") {
+    description = "Runs @Tag(\"simulation\") tests (Phase 2 cascading failure simulation)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform {
+        includeTags("simulation")
+    }
+    testLogging {
+        showStandardStreams = true
+    }
+    outputs.upToDateWhen { false }
 }
