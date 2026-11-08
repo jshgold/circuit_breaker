@@ -1,0 +1,60 @@
+# Phase 3_4 시험 전용 설정 (프로파일 r4jspring). src/main/resources/application.yaml은 건드리지 않는다.
+# 규칙 확인용으로 윈도우·대기 시간을 작게 잡았다. 운영 권장값이 아니다.
+resilience4j:
+  circuitbreaker:
+    configs:
+      shared:                                  # P1: 공통 설정
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 300ms
+        permittedNumberOfCallsInHalfOpenState: 3
+      small:                                   # 대부분의 인스턴스가 상속
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 4
+        minimumNumberOfCalls: 4
+        failureRateThreshold: 50
+        waitDurationInOpenState: 300ms
+        permittedNumberOfCallsInHalfOpenState: 2
+    instances:
+      basic:
+        baseConfig: shared                     # P1
+      svc:
+        baseConfig: small                      # P2, P3, Q1~Q3
+      svc2:
+        baseConfig: small                      # P8-1
+      svc3:
+        baseConfig: small                      # P8-2
+      selfinv:
+        baseConfig: small                      # P6
+      excRecord:
+        baseConfig: small                      # P5: recordExceptions 만 지정
+        recordExceptions:
+          - com.circuitbreaker.r4j.spring.SpringFixtures$ErrA
+      excIgnore:
+        baseConfig: small                      # P5: ignoreExceptions 만 지정
+        ignoreExceptions:
+          - com.circuitbreaker.r4j.spring.SpringFixtures$ErrA
+      excBoth:
+        baseConfig: small                      # P5: 같은 예외를 record 와 ignore 양쪽에
+        recordExceptions:
+          - com.circuitbreaker.r4j.spring.SpringFixtures$ErrA
+        ignoreExceptions:
+          - com.circuitbreaker.r4j.spring.SpringFixtures$ErrA
+      health1:
+        baseConfig: small                      # Q4
+        registerHealthIndicator: true
+      # "undefined" 는 일부러 정의하지 않는다 (P4: 설정 없는 인스턴스의 기본값)
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,circuitbreakers,circuitbreakerevents
+  endpoint:
+    health:
+      show-details: always
+  health:
+    circuitbreakers:
+      enabled: true
