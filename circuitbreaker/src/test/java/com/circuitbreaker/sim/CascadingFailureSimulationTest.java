@@ -62,4 +62,35 @@ class CascadingFailureSimulationTest {
     void S5_DB_대기_100ms() throws InterruptedException {
         runAndPrint(Scenario.S5);
     }
+
+    // ------------------------------------------------------------------------------------------
+    // Resilience4j 버전 (docs/phase3_3-phase2-simulation-with-resilience4j.md)
+    // 위의 기존 메서드는 그대로 두고, 서킷브레이커 구현만 Resilience4j로 바꿔서 같은 시나리오를 돌린다.
+    // S1, S2는 서킷브레이커를 쓰지 않는 시나리오라 구현을 바꿔도 달라지지 않으므로 추가하지 않는다.
+    // ------------------------------------------------------------------------------------------
+
+    private SimulationResult runAndPrint(Scenario scenario, SimulationRunner.CbImpl impl) throws InterruptedException {
+        SimulationResult result = runner.run(scenario, impl);
+        result.print();
+        assertThat(result.offeredProductRps()).isBetween(180.0, 220.0);
+        return result;
+    }
+
+    @Test
+    @Order(13)
+    void R4J_S3_서킷브레이커_DB_fallback() throws InterruptedException {
+        runAndPrint(Scenario.S3, SimulationRunner.CbImpl.RESILIENCE4J);
+    }
+
+    @Test
+    @Order(14)
+    void R4J_S4_DB_허용량_제한() throws InterruptedException {
+        runAndPrint(Scenario.S4, SimulationRunner.CbImpl.RESILIENCE4J);
+    }
+
+    @Test
+    @Order(15)
+    void R4J_S5_DB_대기_100ms() throws InterruptedException {
+        runAndPrint(Scenario.S5, SimulationRunner.CbImpl.RESILIENCE4J);
+    }
 }

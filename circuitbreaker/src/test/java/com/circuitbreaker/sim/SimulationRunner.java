@@ -2,6 +2,9 @@ package com.circuitbreaker.sim;
 
 import com.circuitbreaker.simple.SimpleCircuitBreaker;
 import com.circuitbreaker.simple.SimpleCircuitBreaker.Config;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -14,6 +17,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
 /**
@@ -54,8 +58,16 @@ final class SimulationRunner {
     /** Redis 장애로 값을 못 얻었다는 표시. */
     private static final Object UNAVAILABLE = new Object();
 
+    /** 서킷브레이커 구현. SIMPLE은 Phase 1에서 직접 만든 것, RESILIENCE4J는 라이브러리(2.4.0). */
+    enum CbImpl { SIMPLE, RESILIENCE4J }
+
     SimulationResult run(Scenario scenario) throws InterruptedException {
-        return new Run(scenario).execute();
+        return run(scenario, CbImpl.SIMPLE);
+    }
+
+    /** 서킷브레이커 구현만 바꿔서 같은 시나리오를 실행한다. 서킷브레이커를 쓰지 않는 시나리오(S1, S2)에서는 구현이 영향을 주지 않는다. */
+    SimulationResult run(Scenario scenario, CbImpl impl) throws InterruptedException {
+        return new Run(scenario, impl).execute();
     }
 
     private static final class Run {
@@ -63,7 +75,11 @@ final class SimulationRunner {
         private final Scenario s;
         private final FakeRedis redis = new FakeRedis(CACHE_HIT_RATE, REDIS_DOWN_HANG_MS);
         private final FakeDb db;
+        private final CbImpl impl;
         private final SimpleCircuitBreaker cb;
+        /** Resilience4j 사용 시. 상태가 바뀌면 라이브러리의 거절 카운터가 0으로 초기화되므로 거절 횟수는 핸들러가 직접 센다. */
+        private final CircuitBreaker r4jCb;
+        private final AtomicLong r4jRejected = new AtomicLong();
         private final Semaphore dbGuard;
         private final ThreadPoolExecutor server;
         private final Queue<Event> events = new ConcurrentLinkedQueue<>();
@@ -71,11 +87,23 @@ final class SimulationRunner {
         private final AtomicBoolean stopSampler = new AtomicBoolean();
         private final long start;
 
-        Run(Scenario s) {
+        Run(Scenario s, CbImpl impl) {
             this.s = s;
+            this.impl = impl;
             this.db = new FakeDb(DB_CONNECTIONS, DB_QUERY_MS, s.dbAcquireTimeoutMs());
-            this.cb = s.circuitBreaker()
+            // 두 구현 모두 같은 값: 윈도우 20, 최소 20, 임계치 50%, Open 대기 5초, 시험 호출 3
+            this.cb = (s.circuitBreaker() && impl == CbImpl.SIMPLE)
                     ? new SimpleCircuitBreaker(new Config(20, 20, 50.0, Duration.ofSeconds(5), 3))
+                    : null;
+            this.r4jCb = (s.circuitBreaker() && impl == CbImpl.RESILIENCE4J)
+                    ? CircuitBreaker.of("sim-redis", CircuitBreakerConfig.custom()
+                            .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED)
+                            .slidingWindowSize(20)
+                            .minimumNumberOfCalls(20)
+                            .failureRateThreshold(50f)
+                            .waitDurationInOpenState(Duration.ofSeconds(5))
+                            .permittedNumberOfCallsInHalfOpenState(3)
+                            .build())
                     : null;
             this.dbGuard = s.dbGuard() ? new Semaphore(DB_CONNECTIONS) : null;
             this.server = new ThreadPoolExecutor(
@@ -105,12 +133,17 @@ final class SimulationRunner {
             stopSampler.set(true);
             sampler.join(1000);
 
+            Scenario shown = impl == CbImpl.RESILIENCE4J
+                    ? new Scenario(s.name() + " [Resilience4j]", s.outage(), s.circuitBreaker(), s.dbGuard(), s.dbAcquireTimeoutMs())
+                    : s;
+            String cbState = cb != null ? cb.getState().name() : r4jCb != null ? r4jCb.getState().name() : "-";
+            long cbRejected = cb != null ? cb.getNotPermittedCalls() : r4jCb != null ? r4jRejected.get() : 0;
             return new SimulationResult(
-                    s,
+                    shown,
                     new ArrayList<>(events),
                     new ArrayList<>(gauges),
-                    cb == null ? "-" : cb.getState().name(),
-                    cb == null ? 0 : cb.getNotPermittedCalls(),
+                    cbState,
+                    cbRejected,
                     drained);
         }
 
@@ -175,7 +208,16 @@ final class SimulationRunner {
         /** 상품 조회: Redis -> (miss 또는 Redis 실패) -> DB. */
         private Outcome handleProduct() {
             Object cached;
-            if (cb != null) {
+            if (r4jCb != null) {
+                try {
+                    cached = r4jCb.executeSupplier(redis::get);
+                } catch (CallNotPermittedException e) {
+                    r4jRejected.incrementAndGet();      // 서킷이 막음 -> fallback
+                    cached = UNAVAILABLE;
+                } catch (FakeRedis.RedisDownException e) {
+                    cached = UNAVAILABLE;               // Redis 실패 -> fallback (Resilience4j는 예외를 그대로 던지므로 직접 처리)
+                }
+            } else if (cb != null) {
                 cached = cb.<Object>call(redis::get, () -> UNAVAILABLE);
             } else {
                 try {
