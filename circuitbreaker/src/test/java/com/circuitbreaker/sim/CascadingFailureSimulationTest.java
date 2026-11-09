@@ -67,6 +67,15 @@ class CascadingFailureSimulationTest {
     // Resilience4j 버전 (docs/phase3_3-phase2-simulation-with-resilience4j.md)
     // 위의 기존 메서드는 그대로 두고, 서킷브레이커 구현만 Resilience4j로 바꿔서 같은 시나리오를 돌린다.
     // S1, S2는 서킷브레이커를 쓰지 않는 시나리오라 구현을 바꿔도 달라지지 않으므로 추가하지 않는다.
+    //
+    // 동작 흐름 (각 R4J_* 메서드가 하는 일):
+    //   1. runner.run(시나리오, RESILIENCE4J)  -> SimulationRunner가 시나리오를 13초 동안 실행
+    //        - 0~3초: Redis 정상, 3초: Redis 고장(200ms 매달린 뒤 예외)
+    //        - 초당 200건의 상품 요청 + 10건의 health 요청을 서버 모형(스레드 20 + 대기열 10)에 투입
+    //        - 상품 요청: Resilience4j 서킷브레이커로 감싼 Redis -> (miss/장애) -> DB
+    //   2. result.print()                       -> 초별 표와 안정 구간(5~13초) 요약을 콘솔에 출력
+    //   3. assertThat(offeredProductRps ...)    -> "부하가 목표 200 rps로 투입됐는가"만 단정 (실험 유효성)
+    //      결과 자체(health 성공률 등)는 단정하지 않는다. 사람이 출력을 보고 직접 구현의 결과와 비교한다.
     // ------------------------------------------------------------------------------------------
 
     private SimulationResult runAndPrint(Scenario scenario, SimulationRunner.CbImpl impl) throws InterruptedException {
